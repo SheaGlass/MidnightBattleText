@@ -1,0 +1,134 @@
+# MidnightBattleText
+
+**Scrolling battle text built for WoW Midnight (12.0) and the Secret Values API.**
+
+MidnightBattleText (MBT) is a lightweight, fully customizable scrolling combat text addon designed from the ground up for World of Warcraft: Midnight. It natively supports Blizzard's Secret Values system, meaning combat numbers display correctly even when values are restricted during encounters.
+
+---
+
+## Features
+
+### Combat Text Display
+- **Incoming damage** — see what's hitting you
+- **Outgoing damage** — see what you're dealing
+- **Healing** — incoming and outgoing heals with optional "+" prefix
+- **Misses** — dodge, parry, block, miss, immune, deflect, reflect, resist, absorb, evade
+- **Pet damage** — toggle pet damage on or off
+- **Critical hits** — emphasized with configurable scale multiplier and bounce animation
+
+### Scroll Directions
+Choose from **5 scroll modes**: Up, Down, Left, Right, or Fountain (random arc burst)
+
+### Nameplate Mode
+Anchor outgoing damage text directly to enemy nameplates instead of a fixed screen position. Great for tracking damage on specific targets in multi-mob encounters.
+
+### 30+ Bundled Fonts
+MBT ships with a large selection of fonts — no need to install a separate font addon. Includes:
+Default, A Another Tag, Black Bones, Boston Traffic, Breathe Fire V, Cheri, Consola Mono, Cream Cake, Creato Display, Creativo, Fast Hand, Greek Freak, Hoshiko Satsuki, Hunters K-Pop, Japanese 3017, KG Perfect Penmanship, Lemon Milk, Nunuk, Pastel Trunk, Revamped, Road Rage, Robot Crush, Roman SD, Sanseriffic, Skyforge, Square, Urban Heroes, and more.
+
+The font dropdown in the editor previews each font in its own typeface so you can see exactly what you're picking.
+
+### Full Color Customization
+- **Custom colors** for damage, heal, miss, crit damage, and crit heal text
+- **Class colors** option — color your outgoing damage with your class color using WoW's built-in RAID_CLASS_COLORS
+- Color picker swatches built right into the settings editor
+- Or set colors via slash command: `/mbt color damage ff3333`
+
+### Visual Settings Editor
+Type `/mbt config` or click the **Open Settings Editor** button in Options > AddOns > MidnightBattleText. The editor provides:
+- Font selection with live preview
+- Font size, flags (outline, thick outline, monochrome), and shadow toggle
+- Scroll direction, duration, height, and fade timing sliders
+- Crit scale and "only show crits" mode
+- Number abbreviation (1.5k, 2.3M)
+- Text opacity and stacking gap controls
+- Spell icon toggle and size
+- All 5 color swatches with WoW's native color picker
+- Class color toggle
+- Incoming/outgoing column offsets and Y offset
+- Nameplate mode with Y offset slider
+- **Visual Mode** — drag handles to reposition anchor, incoming column, and outgoing column with a live preview ticker
+- Filter toggles for every event type
+- Test button to preview all text types
+- Reset to defaults
+- **Profile system** — save, load, and delete named setting profiles
+
+### Profile System
+Save your entire configuration as a named profile and switch between them. Great for maintaining different setups for PvP, raiding, and casual play.
+- `/mbt profile save <name>` — save current settings
+- `/mbt profile load <name>` — restore a saved profile
+- `/mbt profile delete <name>` — remove a profile
+- `/mbt profile list` — view all saved profiles
+- Also available in the visual editor's Profiles section
+
+### Blizzard FCT Suppression
+MBT automatically disables Blizzard's default floating combat text by setting all 19 FCT CVars to 0 on login. Toggle this with `/mbt blizzfct`.
+
+### Secret Values Compatible
+All combat value handling is wrapped in pcall for full compatibility with WoW Midnight's Secret Values API. Numbers that become opaque during restricted encounters are passed directly to FontString:SetText() without any arithmetic — they just work.
+
+---
+
+## Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/mbt` | Show all commands |
+| `/mbt config` | Open visual settings editor |
+| `/mbt toggle` | Enable/disable the addon |
+| `/mbt fonts` | List all available fonts |
+| `/mbt font <name>` | Set font by name |
+| `/mbt fontsize <8-72>` | Set font size |
+| `/mbt duration <0.5-5>` | Scroll duration in seconds |
+| `/mbt height <20-500>` | Scroll distance in pixels |
+| `/mbt direction <up\|down\|left\|right\|fountain>` | Scroll direction |
+| `/mbt move` | Unlock anchor for dragging |
+| `/mbt lock` | Lock anchor and save position |
+| `/mbt offsetx <incoming\|outgoing> <px>` | Column X offset |
+| `/mbt threshold <n>` | Hide hits below n (0 = show all) |
+| `/mbt incoming` | Toggle incoming damage |
+| `/mbt outgoing` | Toggle outgoing damage |
+| `/mbt heals` | Toggle healing |
+| `/mbt misses` | Toggle misses |
+| `/mbt pet` | Toggle pet damage |
+| `/mbt blizzfct` | Toggle Blizzard FCT suppression |
+| `/mbt nameplate` | Toggle nameplate-anchored outgoing |
+| `/mbt crits` | Toggle crit emphasis |
+| `/mbt critscale <1.0-3.0>` | Crit font multiplier |
+| `/mbt onlycrits` | Only display critical hits |
+| `/mbt abbreviate` | Toggle number abbreviation |
+| `/mbt healprefix` | Toggle heal "+" prefix |
+| `/mbt icons` | Toggle spell icons |
+| `/mbt shadow` | Toggle font shadow |
+| `/mbt classcolor` | Toggle class-colored outgoing damage |
+| `/mbt alpha <0.3-1.0>` | Set text opacity |
+| `/mbt gap <0-30>` | Set stacking gap |
+| `/mbt color <type> <hex>` | Set color (damage, heal, miss, critdamage, critheal) |
+| `/mbt profile save <name>` | Save current settings as a profile |
+| `/mbt profile load <name>` | Load a saved profile |
+| `/mbt profile delete <name>` | Delete a saved profile |
+| `/mbt profile list` | List all saved profiles |
+| `/mbt test` | Show test text |
+| `/mbt debug` | Toggle debug output |
+| `/mbt reset` | Reset all settings to defaults |
+
+---
+
+## Installation
+
+1. Download and extract to `World of Warcraft/_retail_/Interface/AddOns/MidnightBattleText`
+2. Restart WoW or `/reload`
+3. Type `/mbt config` to open the settings editor, or go to Options > AddOns > MidnightBattleText and click the button
+
+---
+
+## Requirements
+- World of Warcraft: Midnight (12.0)
+- No dependencies — fully standalone
+
+---
+
+## Author
+**Shea (iTek)**
+
+All Rights Reserved. Copyright 2026.

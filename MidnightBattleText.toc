@@ -1,0 +1,12 @@
+## Interface: 120001
+## Title: MidnightBattleText
+## Notes: Scrolling battle text for WoW Midnight (12.0), built for the Secret Values API.
+## Author: Shea (iTek)
+## Version: 1.0.0
+## SavedVariables: MidnightBattleTextDB
+## IconTexture: Interface\Icons\spell_holy_surgeoflight
+
+Core.lua
+Display.lua
+Config.lua
+Editor.lua
