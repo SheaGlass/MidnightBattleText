@@ -16,5 +16,8 @@ Desktop.ini
 .vscode/
 .idea/
 
+# CurseForge description (not needed in repo)
+CURSEFORGE_DESCRIPTION.txt
+
 # WoW saved variables (generated at runtime)
 MidnightBattleTextDB.lua
