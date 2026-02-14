@@ -1,0 +1,8 @@
+package-as: MidnightBattleText
+
+ignore:
+  - .github
+  - .gitignore
+  - .claude
+  - CURSEFORGE_DESCRIPTION.txt
+  - "*.md"

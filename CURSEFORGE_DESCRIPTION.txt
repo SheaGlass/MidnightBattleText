@@ -15,12 +15,21 @@ MidnightBattleText (MBT) is a lightweight, fully customizable scrolling combat t
 - **Misses** — dodge, parry, block, miss, immune, deflect, reflect, resist, absorb, evade
 - **Pet damage** — toggle pet damage on or off
 - **Critical hits** — emphasized with configurable scale multiplier and bounce animation
+- **Only My Damage** — filter out other players' and NPCs' damage so you only see your own outgoing combat text
+
+### Spell Icons
+- **Spell icons** displayed next to combat text for outgoing damage and heals
+- Automatically detected via spell tracking — works for every class and spec
+- **Full icon styling**: size, opacity, border (color + thickness), round/square shape, desaturate
+- **8 anchor positions**: left, right, top, bottom, and all four corners of the text
+- **Draggable icon handle** in visual mode for precise positioning
+- X/Y offset sliders for fine-tuning
 
 ### Scroll Directions
 Choose from **5 scroll modes**: Up, Down, Left, Right, or Fountain (random arc burst)
 
 ### Nameplate Mode
-Anchor outgoing damage text directly to enemy nameplates instead of a fixed screen position. Great for tracking damage on specific targets in multi-mob encounters.
+Anchor outgoing damage text directly above enemy nameplates — works with ThreatPlates, Plater, KuiNameplates, and default nameplates. Includes a Y offset slider to position text above buff/debuff icons.
 
 ### 30+ Bundled Fonts
 MBT ships with a large selection of fonts — no need to install a separate font addon. Includes:
@@ -42,16 +51,25 @@ Type `/mbt config` or click the **Open Settings Editor** button in Options > Add
 - Crit scale and "only show crits" mode
 - Number abbreviation (1.5k, 2.3M)
 - Text opacity and stacking gap controls
-- Spell icon toggle and size
+- Spell icon toggle, size, position, and full styling controls
 - All 5 color swatches with WoW's native color picker
 - Class color toggle
 - Incoming/outgoing column offsets and Y offset
 - Nameplate mode with Y offset slider
-- **Visual Mode** — drag handles to reposition anchor, incoming column, and outgoing column with a live preview ticker
-- Filter toggles for every event type
-- Test button to preview all text types
+- **Visual Mode** — individually drag handles to reposition anchor, incoming column, outgoing column, and icon with a live preview ticker showing spell icons
+- Filter toggles for every event type including "Only My Damage/Heals"
+- Test button to preview all text types with spell icons
 - Reset to defaults
 - **Profile system** — save, load, and delete named setting profiles
+
+### Visual Mode Handles
+Move each element independently — useful when columns are stacked:
+- **Move Anchor** — reposition the base anchor point
+- **Move Incoming** — reposition the incoming damage column
+- **Move Outgoing** — reposition the outgoing damage column
+- **Move Icon** — reposition the spell icon relative to the text
+- **Move All** — show all four handles at once
+- **Exit Visual Mode** — save positions and close handles
 
 ### Profile System
 Save your entire configuration as a named profile and switch between them. Great for maintaining different setups for PvP, raiding, and casual play.

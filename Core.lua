@@ -269,19 +269,30 @@ local lastPetSpellId = nil
 local lastPetSpellTime = 0
 local SPELL_TRACK_WINDOW = 1.5  -- seconds to associate a spell with combat
 
+local playerInCombat = false  -- auto-attack / melee active
+
 local spellTrackFrame = CreateFrame("Frame")
 pcall(function()
     spellTrackFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "pet")
 end)
+pcall(function()
+    spellTrackFrame:RegisterEvent("PLAYER_ENTER_COMBAT")   -- auto-attack started
+    spellTrackFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")   -- auto-attack stopped
+end)
 spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellId)
-    if event ~= "UNIT_SPELLCAST_SUCCEEDED" then return end
-    local now = GetTime()
-    if unit == "player" then
-        lastPlayerSpellId = spellId
-        lastPlayerSpellTime = now
-    elseif unit == "pet" then
-        lastPetSpellId = spellId
-        lastPetSpellTime = now
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local now = GetTime()
+        if unit == "player" then
+            lastPlayerSpellId = spellId
+            lastPlayerSpellTime = now
+        elseif unit == "pet" then
+            lastPetSpellId = spellId
+            lastPetSpellTime = now
+        end
+    elseif event == "PLAYER_ENTER_COMBAT" then
+        playerInCombat = true
+    elseif event == "PLAYER_LEAVE_COMBAT" then
+        playerInCombat = false
     end
 end)
 
@@ -297,6 +308,21 @@ local function GetLastPetSpellId()
         return lastPetSpellId
     end
     return nil
+end
+
+--- Check if the player likely caused this combat event.
+--- Used when onlyPlayerDamage is ON and CLEU is unavailable.
+--- Returns true if: player recently cast a spell, or player is auto-attacking.
+local function IsLikelyPlayerDamage()
+    -- Player recently cast a spell (covers all abilities, dots ticking, etc.)
+    if lastPlayerSpellId and (GetTime() - lastPlayerSpellTime) <= SPELL_TRACK_WINDOW then
+        return true
+    end
+    -- Player is auto-attacking (covers melee swings)
+    if playerInCombat then
+        return true
+    end
+    return false
 end
 
 -------------------------------------------------------------------------------
@@ -322,6 +348,7 @@ local function IsDuplicateOfCLEU(amount, category)
     end
     return false
 end
+
 
 -------------------------------------------------------------------------------
 -- UNIT_COMBAT handler
@@ -363,39 +390,38 @@ local function OnUnitCombat(unit, action, flagText, amount, schoolMask)
     end
 
     -- Outgoing: damage/heals/misses on our target
-    -- When onlyPlayerDamage is true, skip UNIT_COMBAT for outgoing damage/heals
-    -- entirely — CLEU handles those with proper source filtering + spell icons.
-    -- UNIT_COMBAT for "target" fires for ALL damage on the target (any source),
-    -- so it would show other players' damage as yours.
+    -- When onlyPlayerDamage is true, only show if:
+    --   1. CLEU already handled it (dedup will skip here), OR
+    --   2. Player recently cast a spell / is auto-attacking (likely ours)
+    -- This filters out other players' and NPCs' damage on the same target.
     if unit == "target" then
-        if not db.onlyPlayerDamage then
-            local destGUID = UnitGUID("target")
-            if action == "WOUND" then
-                if db.showOutgoingDamage and not IsDuplicateOfCLEU(amount, "damage") then
-                    MBT:ShowText(amount, "damage", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
-                end
-            elseif action == "HEAL" then
-                if db.showOutgoingHeals and not IsDuplicateOfCLEU(amount, "heal") then
-                    MBT:ShowText(amount, "heal", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
-                end
-            end
+        local destGUID = UnitGUID("target")
+
+        -- If onlyPlayerDamage, check if this is likely from the player
+        if db.onlyPlayerDamage and not IsLikelyPlayerDamage() then
+            return
         end
-        -- Always handle misses from UNIT_COMBAT (CLEU also handles them, dedup isn't needed for text misses)
-        if UC_MISS[action] then
+
+        if action == "WOUND" then
+            if db.showOutgoingDamage and not IsDuplicateOfCLEU(amount, "damage") then
+                MBT:ShowText(amount, "damage", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+            end
+        elseif action == "HEAL" then
+            if db.showOutgoingHeals and not IsDuplicateOfCLEU(amount, "heal") then
+                MBT:ShowText(amount, "heal", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+            end
+        elseif UC_MISS[action] then
             if db.showMisses then
-                local destGUID = UnitGUID("target")
                 MBT:ShowText(action, "miss", "outgoing", nil, false, destGUID)
             end
         end
         return
     end
 
-    -- Pet damage — skip if onlyPlayerDamage and CLEU already handles it
+    -- Pet damage
     if unit == "pet" then
-        if not db.onlyPlayerDamage then
-            if action == "WOUND" and db.showPetDamage and not IsDuplicateOfCLEU(amount, "damage") then
-                MBT:ShowText(amount, "damage", "outgoing", GetLastPetSpellId(), isCrit)
-            end
+        if action == "WOUND" and db.showPetDamage and not IsDuplicateOfCLEU(amount, "damage") then
+            MBT:ShowText(amount, "damage", "outgoing", GetLastPetSpellId(), isCrit)
         end
         return
     end
