@@ -71,6 +71,15 @@ local DEFAULTS = {
     fontSize = 24,
     fontFlags = "OUTLINE",
     iconSize = 16,
+    iconOffsetX = -4,
+    iconOffsetY = 0,
+    iconBorder = true,
+    iconBorderColor = {0, 0, 0},
+    iconBorderSize = 1,
+    iconDesaturate = false,
+    iconRound = false,
+    iconAlpha = 1.0,
+    iconAnchor = "LEFT",  -- which side of the text: "LEFT" or "RIGHT"
     scrollHeight = 120,
     scrollDuration = 1.5,
     fadeStart = 0.7,
@@ -116,6 +125,8 @@ local DEFAULTS = {
     -- Nameplate mode
     nameplateMode = false,
     nameplateOffsetY = 20,
+    -- Source filtering
+    onlyPlayerDamage = true,
     -- Debug
     debug = false,
 }
@@ -127,7 +138,10 @@ local DEFAULTS = {
 
 -- Keys to save/restore in profiles (everything except internal state)
 local PROFILE_KEYS = {
-    "enabled", "font", "fontSize", "fontFlags", "iconSize",
+    "enabled", "font", "fontSize", "fontFlags",
+    "iconSize", "iconOffsetX", "iconOffsetY",
+    "iconBorder", "iconBorderColor", "iconBorderSize",
+    "iconDesaturate", "iconRound", "iconAlpha", "iconAnchor",
     "scrollHeight", "scrollDuration", "fadeStart", "scrollDirection",
     "anchorPoint", "anchorRelPoint", "anchorX", "anchorY",
     "incomingOffsetX", "outgoingOffsetX", "offsetY",
@@ -138,7 +152,7 @@ local PROFILE_KEYS = {
     "useClassColors",
     "filterThreshold",
     "showIncomingDamage", "showIncomingHeals", "showOutgoingDamage", "showOutgoingHeals",
-    "showMisses", "showPetDamage",
+    "showMisses", "showPetDamage", "onlyPlayerDamage",
     "hideBlizzardFCT", "nameplateMode", "nameplateOffsetY",
 }
 
@@ -286,6 +300,30 @@ local function GetLastPetSpellId()
 end
 
 -------------------------------------------------------------------------------
+-- Dedup: CLEU and UNIT_COMBAT both fire for outgoing damage/heals.
+-- We prefer CLEU (has spellId for icons). Track recent CLEU events so
+-- UNIT_COMBAT can skip duplicates.
+-------------------------------------------------------------------------------
+
+local recentCLEU = {}        -- { [amount..category..time] = true }
+local DEDUP_WINDOW = 0.15    -- 150ms window for same-frame events
+
+local function MarkCLEUEvent(amount, category)
+    local key = tostring(amount) .. category
+    recentCLEU[key] = GetTime()
+end
+
+local function IsDuplicateOfCLEU(amount, category)
+    local key = tostring(amount) .. category
+    local t = recentCLEU[key]
+    if t and (GetTime() - t) <= DEDUP_WINDOW then
+        recentCLEU[key] = nil
+        return true
+    end
+    return false
+end
+
+-------------------------------------------------------------------------------
 -- UNIT_COMBAT handler
 -- Args: unitTarget, event, flagText, amount, schoolMask
 -- event: "WOUND" (damage), "HEAL", "BLOCK", "DODGE", "PARRY", "MISS", etc.
@@ -325,28 +363,39 @@ local function OnUnitCombat(unit, action, flagText, amount, schoolMask)
     end
 
     -- Outgoing: damage/heals/misses on our target
+    -- When onlyPlayerDamage is true, skip UNIT_COMBAT for outgoing damage/heals
+    -- entirely — CLEU handles those with proper source filtering + spell icons.
+    -- UNIT_COMBAT for "target" fires for ALL damage on the target (any source),
+    -- so it would show other players' damage as yours.
     if unit == "target" then
-        local destGUID = UnitGUID("target")
-        if action == "WOUND" then
-            if db.showOutgoingDamage then
-                MBT:ShowText(amount, "damage", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+        if not db.onlyPlayerDamage then
+            local destGUID = UnitGUID("target")
+            if action == "WOUND" then
+                if db.showOutgoingDamage and not IsDuplicateOfCLEU(amount, "damage") then
+                    MBT:ShowText(amount, "damage", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+                end
+            elseif action == "HEAL" then
+                if db.showOutgoingHeals and not IsDuplicateOfCLEU(amount, "heal") then
+                    MBT:ShowText(amount, "heal", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+                end
             end
-        elseif action == "HEAL" then
-            if db.showOutgoingHeals then
-                MBT:ShowText(amount, "heal", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
-            end
-        elseif UC_MISS[action] then
+        end
+        -- Always handle misses from UNIT_COMBAT (CLEU also handles them, dedup isn't needed for text misses)
+        if UC_MISS[action] then
             if db.showMisses then
+                local destGUID = UnitGUID("target")
                 MBT:ShowText(action, "miss", "outgoing", nil, false, destGUID)
             end
         end
         return
     end
 
-    -- Pet damage
+    -- Pet damage — skip if onlyPlayerDamage and CLEU already handles it
     if unit == "pet" then
-        if action == "WOUND" and db.showPetDamage then
-            MBT:ShowText(amount, "damage", "outgoing", GetLastPetSpellId(), isCrit)
+        if not db.onlyPlayerDamage then
+            if action == "WOUND" and db.showPetDamage and not IsDuplicateOfCLEU(amount, "damage") then
+                MBT:ShowText(amount, "damage", "outgoing", GetLastPetSpellId(), isCrit)
+            end
         end
         return
     end
@@ -454,8 +503,10 @@ local function TryParseCLEU()
             end
 
             if isPlayerSource and db.showOutgoingDamage then
+                MarkCLEUEvent(amount, "damage")
                 MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, destGUID)
             elseif isPetSource and db.showPetDamage then
+                MarkCLEUEvent(amount, "damage")
                 MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, destGUID)
             end
             return
@@ -471,6 +522,7 @@ local function TryParseCLEU()
                     local cOk, cVal = pcall(function() return critical == true end)
                     isCrit = cOk and cVal or false
                 end
+                MarkCLEUEvent(amount, "heal")
                 MBT:ShowText(amount, "heal", "outgoing", spellId, isCrit, destGUID)
             end
             return
@@ -512,6 +564,16 @@ function MBT:ShowText(amount, category, column, spellId, isCrit, destGUID)
             local ok, passes = pcall(function() return amount >= db.filterThreshold end)
             if ok and not passes then return end
         end
+    end
+
+    -- Debug: log spellId availability for icon troubleshooting
+    if db.debug and column == "outgoing" and category ~= "miss" then
+        local idStr = "nil"
+        if spellId then
+            local ok, s = pcall(tostring, spellId)
+            idStr = ok and s or "secret"
+        end
+        DebugPrint("ShowText outgoing:", category, "spellId=" .. idStr)
     end
 
     MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGUID)

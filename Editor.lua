@@ -32,14 +32,40 @@ local BACKDROP = {
 -------------------------------------------------------------------------------
 
 local lastTestTime = 0
+
+-- Sample spell IDs for preview icons (common class-neutral spells)
+-- These are used only for visual preview; actual combat uses real spellIds
+local PREVIEW_SPELLS = {
+    585,    -- Smite (Priest)
+    116,    -- Frostbolt (Mage)
+    686,    -- Shadow Bolt (Warlock)
+    8921,   -- Moonfire (Druid)
+    100780, -- Tiger Palm (Monk)
+    35395,  -- Crusader Strike (Paladin)
+    56641,  -- Steady Shot (Hunter)
+    196819, -- Eviscerate (Rogue)
+    17364,  -- Stormstrike (Shaman)
+    12294,  -- Mortal Strike (Warrior)
+    49998,  -- Death Strike (DK)
+    195072, -- Fel Rush (DH)
+    185358, -- Arcane Shot (Hunter)
+    2061,   -- Flash Heal (Priest)
+    19750,  -- Flash of Light (Paladin)
+    8936,   -- Regrowth (Druid)
+}
+
+local function RandomPreviewSpell()
+    return PREVIEW_SPELLS[math.random(1, #PREVIEW_SPELLS)]
+end
+
 local function FireTestText()
     if not MBT.db or not MBT.db.enabled then return end
     local now = GetTime()
     if now - lastTestTime < 0.4 then return end
     lastTestTime = now
-    MBT:DisplayScrollText(12345, "damage", "incoming", nil, false)
-    MBT:DisplayScrollText(54321, "damage", "outgoing", nil, true)
-    MBT:DisplayScrollText(8765,  "heal",   "incoming", nil, false)
+    MBT:DisplayScrollText(12345, "damage", "incoming", RandomPreviewSpell(), false)
+    MBT:DisplayScrollText(54321, "damage", "outgoing", RandomPreviewSpell(), true)
+    MBT:DisplayScrollText(8765,  "heal",   "incoming", RandomPreviewSpell(), false)
 end
 
 -------------------------------------------------------------------------------
@@ -605,7 +631,56 @@ local function CreateEditorFrame()
     cbIcons, y = CreateCheckbox(content, y, "Show Spell Icons", "showIcons")
 
     local iconSizeSlider
-    iconSizeSlider, y = CreateSlider(content, y, "Icon Size", "iconSize", 8, 32, 1)
+    iconSizeSlider, y = CreateSlider(content, y, "Icon Size", "iconSize", 8, 64, 1)
+
+    local iconOffsetXSlider
+    iconOffsetXSlider, y = CreateSlider(content, y, "Icon X Offset", "iconOffsetX", -50, 50, 1)
+
+    local iconOffsetYSlider
+    iconOffsetYSlider, y = CreateSlider(content, y, "Icon Y Offset", "iconOffsetY", -50, 50, 1)
+
+    local iconAlphaSlider
+    iconAlphaSlider, y = CreateSlider(content, y, "Icon Opacity", "iconAlpha", 0.1, 1.0, 0.05)
+
+    -- Icon anchor position dropdown
+    local ICON_ANCHOR_ITEMS = {
+        "Left", "Right", "Top", "Bottom",
+        "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right",
+    }
+    local ICON_ANCHOR_KEYS = {
+        "LEFT", "RIGHT", "TOP", "BOTTOM",
+        "TOPLEFT", "TOPRIGHT", "BOTTOMLEFT", "BOTTOMRIGHT",
+    }
+    local iconAnchorDD
+    iconAnchorDD, y = CreateDropdown(content, y, "Icon Position",
+        ICON_ANCHOR_ITEMS,
+        function()
+            local cur = MBT.db.iconAnchor or "LEFT"
+            for i, key in ipairs(ICON_ANCHOR_KEYS) do
+                if key == cur then return i end
+            end
+            return 1
+        end,
+        function(idx)
+            MBT.db.iconAnchor = ICON_ANCHOR_KEYS[idx] or "LEFT"
+            FireTestText()
+        end
+    )
+
+    local cbIconBorder
+    cbIconBorder, y = CreateCheckbox(content, y, "Icon Border", "iconBorder")
+
+    local iconBorderSizeSlider
+    iconBorderSizeSlider, y = CreateSlider(content, y, "Border Thickness", "iconBorderSize", 1, 4, 1)
+
+    local swIconBorder
+    swIconBorder, y = CreateColorSwatch(content, y, "Border Color", "iconBorderColor")
+
+    local cbIconRound
+    cbIconRound, y = CreateCheckbox(content, y, "Round Icon", "iconRound")
+
+    local cbIconDesat
+    cbIconDesat, y = CreateCheckbox(content, y, "Desaturate Icon", "iconDesaturate")
 
     local alphaSlider
     alphaSlider, y = CreateSlider(content, y, "Text Opacity", "textAlpha", 0.3, 1.0, 0.05)
@@ -682,6 +757,12 @@ local function CreateEditorFrame()
     end)
     widgets.vmOutgoingBtn = vmOutgoingBtn
 
+    local vmIconBtn
+    vmIconBtn, y = CreateButton(content, y, "Move Icon", 120, function()
+        MBT:ShowHandle("icon")
+    end)
+    widgets.vmIconBtn = vmIconBtn
+
     local vmAllBtn
     vmAllBtn, y = CreateButton(content, y, "Move All", 120, function()
         MBT:ShowHandle("all")
@@ -714,6 +795,8 @@ local function CreateEditorFrame()
     cbMisses, y = CreateCheckbox(content, y, "Misses", "showMisses")
     local cbPet
     cbPet, y = CreateCheckbox(content, y, "Pet Damage", "showPetDamage")
+    local cbOnlyPlayer
+    cbOnlyPlayer, y = CreateCheckbox(content, y, "Only My Damage/Heals", "onlyPlayerDamage")
 
     y = y - SECTION_GAP
 
@@ -722,10 +805,10 @@ local function CreateEditorFrame()
 
     local testBtn
     testBtn, y = CreateButton(content, y, "Test", 80, function()
-        MBT:DisplayScrollText(12345,  "damage", "incoming", nil, false)
-        MBT:DisplayScrollText(8765,   "damage", "outgoing", nil, false)
-        MBT:DisplayScrollText(54321,  "damage", "outgoing", nil, true)
-        MBT:DisplayScrollText(5432,   "heal",   "incoming", nil, false)
+        MBT:DisplayScrollText(12345,  "damage", "incoming", RandomPreviewSpell(), false)
+        MBT:DisplayScrollText(8765,   "damage", "outgoing", RandomPreviewSpell(), false)
+        MBT:DisplayScrollText(54321,  "damage", "outgoing", RandomPreviewSpell(), true)
+        MBT:DisplayScrollText(5432,   "heal",   "incoming", RandomPreviewSpell(), false)
         MBT:DisplayScrollText(19876,  "heal",   "incoming", nil, true)
         MBT:DisplayScrollText("DODGE", "miss",  "incoming", nil, false)
     end)
@@ -889,6 +972,11 @@ local function PositionHandle(hType)
         handles.outgoing:ClearAllPoints()
         handles.outgoing:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
             ax + db.outgoingOffsetX, ay + db.offsetY)
+    elseif hType == "icon" and handles.icon then
+        -- Position relative to anchor + icon offsets
+        handles.icon:ClearAllPoints()
+        handles.icon:SetPoint("CENTER", UIParent, "BOTTOMLEFT",
+            ax + (db.iconOffsetX or -4), ay + (db.iconOffsetY or 0))
     end
 end
 
@@ -896,6 +984,7 @@ local function PositionAllHandles()
     PositionHandle("anchor")
     PositionHandle("incoming")
     PositionHandle("outgoing")
+    PositionHandle("icon")
 end
 
 local function SyncHandleToDb(handle, handleType)
@@ -912,6 +1001,13 @@ local function SyncHandleToDb(handle, handleType)
         db.anchorY = hy - sh / 2
         anchorFrame:ClearAllPoints()
         anchorFrame:SetPoint("CENTER", UIParent, "CENTER", db.anchorX, db.anchorY)
+    elseif handleType == "icon" then
+        local ax, ay = anchorFrame:GetCenter()
+        local hx, hy = handle:GetCenter()
+        if ax and hx then
+            db.iconOffsetX = math.floor(hx - ax + 0.5)
+            db.iconOffsetY = math.floor(hy - ay + 0.5)
+        end
     else
         local ax, ay = anchorFrame:GetCenter()
         local hx, hy = handle:GetCenter()
@@ -938,6 +1034,7 @@ local function SetupVisualMode()
         handles.anchor   = CreateHandle("|cff00ccffAnchor|r",   0, 0.8, 1)
         handles.incoming = CreateHandle("|cffff4444Incoming|r", 1, 0.3, 0.3)
         handles.outgoing = CreateHandle("|cff44ff44Outgoing|r", 0.3, 1, 0.3)
+        handles.icon     = CreateHandle("|cffffaa00Icon|r",     1, 0.7, 0)
 
         for hType, handle in pairs(handles) do
             handle:SetScript("OnDragStart", function(self)
@@ -962,12 +1059,12 @@ end
 local function StartPreviewTicker()
     if previewTicker then previewTicker:Cancel() end
     previewTicker = C_Timer.NewTicker(2.0, function()
-        MBT:DisplayScrollText(math.random(1000, 50000), "damage", "incoming", nil, false)
-        MBT:DisplayScrollText(math.random(1000, 50000), "damage", "outgoing", nil, false)
+        MBT:DisplayScrollText(math.random(1000, 50000), "damage", "incoming", RandomPreviewSpell(), false)
+        MBT:DisplayScrollText(math.random(1000, 50000), "damage", "outgoing", RandomPreviewSpell(), false)
         if math.random(1, 3) == 1 then
-            MBT:DisplayScrollText(math.random(10000, 99999), "damage", "outgoing", nil, true)
+            MBT:DisplayScrollText(math.random(10000, 99999), "damage", "outgoing", RandomPreviewSpell(), true)
         end
-        MBT:DisplayScrollText(math.random(1000, 20000), "heal", "incoming", nil, false)
+        MBT:DisplayScrollText(math.random(1000, 20000), "heal", "incoming", RandomPreviewSpell(), false)
     end)
 end
 
@@ -975,11 +1072,12 @@ local function HideAllHandles()
     if handles.anchor   then handles.anchor:Hide()   end
     if handles.incoming then handles.incoming:Hide() end
     if handles.outgoing then handles.outgoing:Hide() end
+    if handles.icon     then handles.icon:Hide()     end
     wipe(activeHandles)
 end
 
 --- Show a specific handle (or all). Entering visual mode if not already active.
---- @param which string "anchor", "incoming", "outgoing", or "all"
+--- @param which string "anchor", "incoming", "outgoing", "icon", or "all"
 function MBT:ShowHandle(which)
     SetupVisualMode()
 
@@ -988,7 +1086,7 @@ function MBT:ShowHandle(which)
 
     local toShow
     if which == "all" then
-        toShow = {"anchor", "incoming", "outgoing"}
+        toShow = {"anchor", "incoming", "outgoing", "icon"}
     else
         toShow = {which}
     end
@@ -1013,6 +1111,7 @@ function MBT:ShowHandle(which)
             anchor   = "|cff00ccffAnchor|r",
             incoming = "|cffff4444Incoming|r",
             outgoing = "|cff44ff44Outgoing|r",
+            icon     = "|cffffaa00Icon|r",
         }
         print("|cff00ccffMBT|r: Showing " .. (colorMap[which] or which) .. " handle. Drag to reposition.")
     end

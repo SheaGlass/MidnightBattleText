@@ -76,11 +76,33 @@ local function CreateTextFrame()
     f:SetSize(300, 40)
     f:SetFrameStrata("HIGH")
 
-    -- Spell icon
-    local icon = f:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(16, 16)
-    icon:SetPoint("RIGHT", f, "LEFT", -4, 0)
+    -- Spell icon container (for border + mask)
+    local iconFrame = CreateFrame("Frame", nil, f)
+    iconFrame:SetSize(16, 16)
+    iconFrame:SetPoint("RIGHT", f, "LEFT", -4, 0)
+    f.iconFrame = iconFrame
+
+    local icon = iconFrame:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints(iconFrame)
     f.icon = icon
+
+    -- Round mask (applied dynamically)
+    local iconMask = iconFrame:CreateMaskTexture()
+    iconMask:SetTexture("Interface\\CHARACTERFRAME\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    iconMask:SetAllPoints(iconFrame)
+    f.iconMask = iconMask
+
+    -- Border overlay
+    local iconBorder = iconFrame:CreateTexture(nil, "OVERLAY")
+    iconBorder:SetPoint("TOPLEFT", iconFrame, "TOPLEFT", -1, 1)
+    iconBorder:SetPoint("BOTTOMRIGHT", iconFrame, "BOTTOMRIGHT", 1, -1)
+    iconBorder:SetColorTexture(0, 0, 0, 1)
+    iconBorder:Hide()
+    f.iconBorder = iconBorder
+
+    -- Icon goes on top of border
+    icon:SetDrawLayer("ARTWORK", 1)
+    iconBorder:SetDrawLayer("ARTWORK", 0)
 
     -- Text
     local text = f:CreateFontString(nil, "OVERLAY")
@@ -122,6 +144,9 @@ local function CreateTextFrame()
         f:Hide()
         f:ClearAllPoints()
         f.icon:Hide()
+        f.iconFrame:Hide()
+        f.iconBorder:Hide()
+        f.icon:RemoveMaskTexture(f.iconMask)
         -- Restore parent to anchor if it was re-parented for nameplate mode
         if f.nameplateBound then
             f:SetParent(anchor)
@@ -254,17 +279,84 @@ function MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGU
 
     ---------------------------------------------------------------------------
     -- Spell icon
+    -- C_Spell.GetSpellTexture may be restricted by Secret Values in 12.0,
+    -- so we try multiple APIs with pcall safety.
     ---------------------------------------------------------------------------
     if db.showIcons and spellId then
-        local iconTexture = C_Spell.GetSpellTexture(spellId)
+        local iconTexture
+        -- Try C_Spell.GetSpellTexture first (modern API)
+        local ok1, tex1 = pcall(C_Spell.GetSpellTexture, spellId)
+        if ok1 and tex1 then
+            iconTexture = tex1
+        else
+            -- Try C_Spell.GetSpellInfo which returns icon as .iconID
+            local ok2, info = pcall(C_Spell.GetSpellInfo, spellId)
+            if ok2 and info and info.iconID then
+                iconTexture = info.iconID
+            else
+                -- Try legacy GetSpellTexture if available
+                if GetSpellTexture then
+                    local ok3, tex3 = pcall(GetSpellTexture, spellId)
+                    if ok3 and tex3 then
+                        iconTexture = tex3
+                    end
+                end
+            end
+        end
         if iconTexture then
+            local sz = db.iconSize
+            f.iconFrame:SetSize(sz, sz)
+            f.iconFrame:ClearAllPoints()
+
+            -- Anchor position relative to the text
+            local anchorPos = db.iconAnchor or "LEFT"
+            local ox = db.iconOffsetX or -4
+            local oy = db.iconOffsetY or 0
+            local anchorMap = {
+                LEFT        = {"RIGHT",       "LEFT",        ox, oy},
+                RIGHT       = {"LEFT",        "RIGHT",       ox, oy},
+                TOP         = {"BOTTOM",      "TOP",         ox, oy},
+                BOTTOM      = {"TOP",         "BOTTOM",      ox, oy},
+                TOPLEFT     = {"BOTTOMRIGHT", "TOPLEFT",     ox, oy},
+                TOPRIGHT    = {"BOTTOMLEFT",  "TOPRIGHT",    ox, oy},
+                BOTTOMLEFT  = {"TOPRIGHT",    "BOTTOMLEFT",  ox, oy},
+                BOTTOMRIGHT = {"TOPLEFT",     "BOTTOMRIGHT", ox, oy},
+            }
+            local pts = anchorMap[anchorPos] or anchorMap["LEFT"]
+            f.iconFrame:SetPoint(pts[1], f, pts[2], pts[3], pts[4])
+
             f.icon:SetTexture(iconTexture)
-            f.icon:SetSize(db.iconSize, db.iconSize)
+            f.icon:SetAlpha(db.iconAlpha or 1.0)
+            f.icon:SetDesaturated(db.iconDesaturate or false)
+
+            -- Round mask
+            if db.iconRound then
+                f.icon:AddMaskTexture(f.iconMask)
+            else
+                f.icon:RemoveMaskTexture(f.iconMask)
+            end
+
+            -- Border
+            if db.iconBorder then
+                local bs = db.iconBorderSize or 1
+                f.iconBorder:ClearAllPoints()
+                f.iconBorder:SetPoint("TOPLEFT", f.iconFrame, "TOPLEFT", -bs, bs)
+                f.iconBorder:SetPoint("BOTTOMRIGHT", f.iconFrame, "BOTTOMRIGHT", bs, -bs)
+                local bc = db.iconBorderColor or {0, 0, 0}
+                f.iconBorder:SetColorTexture(bc[1], bc[2], bc[3], 1)
+                f.iconBorder:Show()
+            else
+                f.iconBorder:Hide()
+            end
+
+            f.iconFrame:Show()
             f.icon:Show()
         else
+            f.iconFrame:Hide()
             f.icon:Hide()
         end
     else
+        f.iconFrame:Hide()
         f.icon:Hide()
     end
 
