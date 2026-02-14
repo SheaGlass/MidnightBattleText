@@ -23,7 +23,7 @@ jobs:
 
       - uses: BigWigsMods/packager@v2
         with:
-          args: -g retail
+          args: -g retail -p 1461864
         env:
           CF_API_KEY: ${{ secrets.CF_API_TOKEN }}
           GITHUB_OAUTH: ${{ github.token }}
