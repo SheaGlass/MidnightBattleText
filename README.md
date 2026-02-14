@@ -141,4 +141,4 @@ All combat value handling is wrapped in pcall for full compatibility with WoW Mi
 ---
 
 ## License
-All Rights Reserved. Copyright 2026 Shea (iTek).
+All Rights Reserved. Copyright 2026 Shea.glass
