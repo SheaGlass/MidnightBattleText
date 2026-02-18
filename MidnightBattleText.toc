@@ -8,5 +8,6 @@
 
 Core.lua
 Display.lua
+Minimap.lua
 Config.lua
 Editor.lua

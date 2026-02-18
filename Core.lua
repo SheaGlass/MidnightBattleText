@@ -12,6 +12,18 @@
 
 local ADDON_NAME, MBT = ...
 
+-- Block the "has been blocked from an action" popup for this addon
+do
+    local origShow = StaticPopup_Show
+    StaticPopup_Show = function(which, text_arg1, ...)
+        if which == "ADDON_ACTION_FORBIDDEN" and
+           type(text_arg1) == "string" and text_arg1:find(ADDON_NAME, 1, true) then
+            return nil
+        end
+        return origShow(which, text_arg1, ...)
+    end
+end
+
 -------------------------------------------------------------------------------
 -- Bundled font table: name -> path (relative to Interface\AddOns)
 -------------------------------------------------------------------------------
@@ -129,6 +141,8 @@ local DEFAULTS = {
     onlyPlayerDamage = true,
     -- Debug
     debug = false,
+    -- Minimap
+    minimapAngle = 220,
 }
 
 -------------------------------------------------------------------------------
@@ -267,17 +281,22 @@ local lastPlayerSpellId = nil
 local lastPlayerSpellTime = 0
 local lastPetSpellId = nil
 local lastPetSpellTime = 0
-local SPELL_TRACK_WINDOW = 1.5  -- seconds to associate a spell with combat
+local SPELL_TRACK_WINDOW = 1.5  -- seconds to associate a spell icon with combat
+local DOT_TRACK_WINDOW   = 18   -- seconds to keep showing damage on a dotted target
 
 local playerInCombat = false  -- auto-attack / melee active
+
+-- Per-target tracking: records targets the player has cast on so DoT damage
+-- keeps showing when tabbing between them
+local engagedTargets = {}  -- [guid] = { time = <last cast time>, spellId = <last spell> }
 
 local spellTrackFrame = CreateFrame("Frame")
 pcall(function()
     spellTrackFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", "pet")
 end)
 pcall(function()
-    spellTrackFrame:RegisterEvent("PLAYER_ENTER_COMBAT")   -- auto-attack started
-    spellTrackFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")   -- auto-attack stopped
+    spellTrackFrame:RegisterEvent("PLAYER_ENTER_COMBAT")
+    spellTrackFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")
 end)
 spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spellId)
     if event == "UNIT_SPELLCAST_SUCCEEDED" then
@@ -285,6 +304,11 @@ spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spell
         if unit == "player" then
             lastPlayerSpellId = spellId
             lastPlayerSpellTime = now
+            -- Track this target as engaged
+            local guid = UnitGUID("target")
+            if guid then
+                engagedTargets[guid] = { time = now, spellId = spellId }
+            end
         elseif unit == "pet" then
             lastPetSpellId = spellId
             lastPetSpellTime = now
@@ -293,6 +317,16 @@ spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spell
         playerInCombat = true
     elseif event == "PLAYER_LEAVE_COMBAT" then
         playerInCombat = false
+    end
+end)
+
+-- Periodic cleanup of stale engaged targets (every 10s)
+C_Timer.NewTicker(10, function()
+    local now = GetTime()
+    for guid, data in pairs(engagedTargets) do
+        if (now - data.time) > DOT_TRACK_WINDOW then
+            engagedTargets[guid] = nil
+        end
     end
 end)
 
@@ -310,17 +344,15 @@ local function GetLastPetSpellId()
     return nil
 end
 
---- Check if the player likely caused this combat event.
---- Used when onlyPlayerDamage is ON and CLEU is unavailable.
---- Returns true if: player recently cast a spell, or player is auto-attacking.
-local function IsLikelyPlayerDamage()
-    -- Player recently cast a spell (covers all abilities, dots ticking, etc.)
-    if lastPlayerSpellId and (GetTime() - lastPlayerSpellTime) <= SPELL_TRACK_WINDOW then
-        return true
-    end
-    -- Player is auto-attacking (covers melee swings)
-    if playerInCombat then
-        return true
+--- Check if the player has engaged this target (cast a spell on it recently).
+--- Used when onlyPlayerDamage is ON to filter UNIT_COMBAT events.
+local function IsLikelyPlayerDamage(destGUID)
+    -- Check if we have cast on this specific target within DoT window
+    if destGUID then
+        local data = engagedTargets[destGUID]
+        if data and (GetTime() - data.time) <= DOT_TRACK_WINDOW then
+            return true
+        end
     end
     return false
 end
@@ -397,8 +429,8 @@ local function OnUnitCombat(unit, action, flagText, amount, schoolMask)
     if unit == "target" then
         local destGUID = UnitGUID("target")
 
-        -- If onlyPlayerDamage, check if this is likely from the player
-        if db.onlyPlayerDamage and not IsLikelyPlayerDamage() then
+        -- If onlyPlayerDamage, check if we've cast on this specific target
+        if db.onlyPlayerDamage and not IsLikelyPlayerDamage(destGUID) then
             return
         end
 
@@ -709,6 +741,9 @@ function MBT:RegisterSettings()
         "Type |cff00ccff/mbt|r for a list of all slash commands"
     )
 
+    if MBT._settingsRegistered then return end
+    MBT._settingsRegistered = true
+
     local category, layout = Settings.RegisterCanvasLayoutCategory(panel, ADDON_NAME)
     Settings.RegisterAddOnCategory(category)
 end
@@ -744,6 +779,7 @@ local function OnEvent(self, event, ...)
 
         MBT:InitDisplay()
         MBT:RegisterSettings()
+        MBT:CreateMinimapButton()
 
         print("|cff00ccffMidnightBattleText|r loaded. Type |cff00ccff/mbt|r for options.")
 
