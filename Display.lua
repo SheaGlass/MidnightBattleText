@@ -24,6 +24,10 @@ local POOL_MAX = 30
 -- Stacking offset per column, resets periodically to avoid runaway drift
 local columnNextOffset = { incoming = 0, outgoing = 0 }
 
+-- Accumulation stacking state
+local activeStacks    = {}  -- stackKey -> stack object
+local stackSlotCount  = { incoming = 0, outgoing = 0 }  -- live slot counter per column
+
 -------------------------------------------------------------------------------
 -- Number abbreviation helper
 -------------------------------------------------------------------------------
@@ -141,6 +145,7 @@ local function CreateTextFrame()
     scaleDown:SetOrder(2)
 
     ag:SetScript("OnFinished", function()
+        if f.onRelease then f.onRelease() f.onRelease = nil end
         f:Hide()
         f:ClearAllPoints()
         f.icon:Hide()
@@ -183,12 +188,43 @@ end
 local resetTimer = 0
 local RESET_INTERVAL = 0.3
 
+local function LaunchStackAnimation(stack)
+    local f = stack.frame
+    local db = MBT.db
+    local direction = db.scrollDirection or "up"
+    local scrollX, scrollY = GetScrollOffset(direction, db.scrollHeight)
+    local duration = db.scrollDuration
+    f.translateAnim:SetOffset(scrollX, scrollY)
+    f.translateAnim:SetDuration(duration)
+    local fadeDelay = duration * db.fadeStart
+    f.fadeAnim:SetStartDelay(fadeDelay)
+    f.fadeAnim:SetDuration(duration - fadeDelay)
+    f.animGroup:Play()
+    if stack.isCrit and db.showCrits then
+        f.critGroup:Play()
+    end
+    stack.animStarted = true
+end
+
 local function OnUpdate(self, elapsed)
-    resetTimer = resetTimer + elapsed
-    if resetTimer >= RESET_INTERVAL then
-        resetTimer = 0
-        columnNextOffset.incoming = 0
-        columnNextOffset.outgoing = 0
+    local db = MBT.db
+    if db and db.stackingMode then
+        -- Stacking mode: check each active stack for timeout
+        local timeout = db.stackTimeout or 1.0
+        local now = GetTime()
+        for _, stack in pairs(activeStacks) do
+            if not stack.animStarted and (now - stack.lastHitTime) >= timeout then
+                LaunchStackAnimation(stack)
+            end
+        end
+    else
+        -- Normal mode: reset column offsets periodically to prevent drift
+        resetTimer = resetTimer + elapsed
+        if resetTimer >= RESET_INTERVAL then
+            resetTimer = 0
+            columnNextOffset.incoming = 0
+            columnNextOffset.outgoing = 0
+        end
     end
 end
 
@@ -213,10 +249,255 @@ local FALLBACK_COLOR = {1.0, 0.2, 0.2}
 local playerClassColor
 
 -------------------------------------------------------------------------------
+-- Spell icon texture lookup (shared by stacking and regular display)
+-- Tries every available API in order of reliability.
+-------------------------------------------------------------------------------
+
+local function GetSpellIconTexture(spellId)
+    if not spellId then return nil end
+
+    -- 1. Modern API: C_Spell.GetSpellTexture → fileDataID
+    local ok1, tex1 = pcall(C_Spell.GetSpellTexture, spellId)
+    if ok1 and tex1 then return tex1 end
+
+    -- 2. Old global GetSpellInfo → name, _, texture (3rd return = icon)
+    if GetSpellInfo then
+        local ok2, _, _, icon2 = pcall(GetSpellInfo, spellId)
+        if ok2 and icon2 then return icon2 end
+    end
+
+    -- 3. C_Spell.GetSpellInfo struct → .iconID
+    if C_Spell and C_Spell.GetSpellInfo then
+        local ok3, info = pcall(C_Spell.GetSpellInfo, spellId)
+        if ok3 and info and info.iconID then return info.iconID end
+    end
+
+    -- 4. Legacy GetSpellTexture
+    if GetSpellTexture then
+        local ok4, tex4 = pcall(GetSpellTexture, spellId)
+        if ok4 and tex4 then return tex4 end
+    end
+
+    -- 5. Last resort: the current player's last-cast spell (non-secret, from UNIT_SPELLCAST_SUCCEEDED)
+    if MBT.GetLastPlayerSpellId and spellId ~= MBT.GetLastPlayerSpellId() then
+        local altId = MBT.GetLastPlayerSpellId()
+        if altId then
+            local ok5, tex5 = pcall(C_Spell.GetSpellTexture, altId)
+            if ok5 and tex5 then return tex5 end
+            if GetSpellInfo then
+                local ok6, _, _, icon6 = pcall(GetSpellInfo, altId)
+                if ok6 and icon6 then return icon6 end
+            end
+        end
+    end
+
+    return nil
+end
+
+-- Apply spell icon to a frame (shared setup)
+local function ApplySpellIcon(f, spellId, db)
+    local iconTexture = GetSpellIconTexture(spellId)
+    if not iconTexture then
+        f.iconFrame:Hide()
+        f.icon:Hide()
+        return
+    end
+
+    local sz = db.iconSize
+    f.iconFrame:SetSize(sz, sz)
+    f.iconFrame:ClearAllPoints()
+
+    local anchorPos = db.iconAnchor or "LEFT"
+    local ox, oy = db.iconOffsetX or -4, db.iconOffsetY or 0
+    local anchorMap = {
+        LEFT        = {"RIGHT",       "LEFT",        ox, oy},
+        RIGHT       = {"LEFT",        "RIGHT",       ox, oy},
+        TOP         = {"BOTTOM",      "TOP",         ox, oy},
+        BOTTOM      = {"TOP",         "BOTTOM",      ox, oy},
+        TOPLEFT     = {"BOTTOMRIGHT", "TOPLEFT",     ox, oy},
+        TOPRIGHT    = {"BOTTOMLEFT",  "TOPRIGHT",    ox, oy},
+        BOTTOMLEFT  = {"TOPRIGHT",    "BOTTOMLEFT",  ox, oy},
+        BOTTOMRIGHT = {"TOPLEFT",     "BOTTOMRIGHT", ox, oy},
+    }
+    local pts = anchorMap[anchorPos] or anchorMap["LEFT"]
+    f.iconFrame:SetPoint(pts[1], f.text, pts[2], pts[3], pts[4])
+
+    f.icon:SetTexture(iconTexture)
+    f.icon:SetAlpha(db.iconAlpha or 1.0)
+    f.icon:SetDesaturated(db.iconDesaturate or false)
+
+    if db.iconRound then
+        f.icon:AddMaskTexture(f.iconMask)
+    else
+        f.icon:RemoveMaskTexture(f.iconMask)
+    end
+
+    if db.iconBorder then
+        local bs = db.iconBorderSize or 1
+        f.iconBorder:ClearAllPoints()
+        f.iconBorder:SetPoint("TOPLEFT",     f.iconFrame, "TOPLEFT",     -bs,  bs)
+        f.iconBorder:SetPoint("BOTTOMRIGHT", f.iconFrame, "BOTTOMRIGHT",  bs, -bs)
+        local bc = db.iconBorderColor or {0, 0, 0}
+        f.iconBorder:SetColorTexture(bc[1], bc[2], bc[3], 1)
+        f.iconBorder:Show()
+    else
+        f.iconBorder:Hide()
+    end
+
+    f.iconFrame:Show()
+    f.icon:Show()
+end
+
+-------------------------------------------------------------------------------
+-- Stacking accumulation display
+-------------------------------------------------------------------------------
+
+local function FormatStackText(stack, db)
+    local amount = stack.total
+    local displayAmount = db.abbreviateNumbers and AbbreviateNumber(amount) or amount
+    local prefix = stack.isPet and "Pet " or ""
+    local h, c = stack.hits, stack.crits
+    -- Concatenation can throw on secret numeric values; pcall-wrap and fall back to raw amount.
+    local ok, result = pcall(function()
+        if h <= 1 then
+            return prefix .. displayAmount
+        end
+        if c == 0 then
+            return prefix .. displayAmount .. " [" .. h .. " Hits]"
+        elseif c == h then
+            return prefix .. displayAmount .. " [" .. c .. (c == 1 and " Crit]" or " Crits]")
+        else
+            return prefix .. displayAmount .. " [" .. h .. " Hits, " .. c .. (c == 1 and " Crit]" or " Crits]")
+        end
+    end)
+    return ok and result or displayAmount
+end
+
+-- Resolve color for a stack (mirrors DisplayScrollText color logic)
+local function GetStackColor(stack, db)
+    if stack.category == "damage" and not stack.spellId and not stack.isPet then
+        return {1, 1, 1}  -- auto-attack: white
+    end
+    if not stack.isPet and db.useClassColors and stack.category == "damage" and stack.column == "outgoing" then
+        if not playerClassColor then
+            local _, class = UnitClass("player")
+            local cc = RAID_CLASS_COLORS[class]
+            if cc then playerClassColor = {cc.r, cc.g, cc.b} end
+        end
+        return playerClassColor
+    end
+    if stack.isCrit and db.showCrits and CRIT_COLOR_KEYS[stack.category] then
+        return db[CRIT_COLOR_KEYS[stack.category]]
+    end
+    return db[COLOR_KEYS[stack.category] or "damageColor"] or FALLBACK_COLOR
+end
+
+function MBT:AccumulateAndDisplay(amount, category, column, spellId, isCrit, destGUID, isPet)
+    local db = self.db
+
+    -- Build a safe (non-secret) stack key
+    local spellKey  = spellId and tostring(spellId) or (isPet and "petswing" or "swing")
+    local targetKey = destGUID or "none"
+    local stackKey  = spellKey .. "|" .. targetKey .. "|" .. column
+
+    local stack = activeStacks[stackKey]
+
+    if stack and not stack.animStarted then
+        -- Update existing accumulation entry in-place
+        local ok, newTotal = pcall(function() return stack.total + amount end)
+        stack.total = ok and newTotal or stack.total
+        stack.hits  = stack.hits + 1
+        if isCrit then
+            stack.crits  = stack.crits + 1
+            stack.isCrit = true
+        end
+        stack.lastHitTime = GetTime()
+        -- Update displayed text (frame is still static, no animation yet)
+        local textStr = FormatStackText(stack, db)
+        local color = GetStackColor(stack, db)
+        stack.frame.text:SetText(textStr)
+        stack.frame.text:SetTextColor(color[1], color[2], color[3], 1)
+        return
+    end
+
+    -- New stack: acquire a frame and show it statically (animation deferred until timeout)
+    local f = AcquireFrame()
+
+    -- Font
+    local size = db.fontSize
+    if isCrit and db.showCrits then size = math.floor(size * db.critScale) end
+    f.text:SetFont(db.font, size, db.fontFlags)
+    if db.fontShadow then
+        f.text:SetShadowOffset(2, -2)
+        f.text:SetShadowColor(0, 0, 0, 0.8)
+    else
+        f.text:SetShadowOffset(0, 0)
+    end
+
+    local newStack = {
+        key         = stackKey,
+        spellId     = spellId,
+        category    = category,
+        column      = column,
+        destGUID    = destGUID,
+        isPet       = isPet,
+        isCrit      = isCrit,
+        total       = amount,
+        hits        = 1,
+        crits       = isCrit and 1 or 0,
+        frame       = f,
+        lastHitTime = GetTime(),
+        animStarted = false,
+        slotIdx     = stackSlotCount[column],
+    }
+    stackSlotCount[column] = stackSlotCount[column] + 1
+    activeStacks[stackKey] = newStack
+
+    -- Text content
+    local textStr = FormatStackText(newStack, db)
+    f.text:SetText(textStr)
+
+    -- Color
+    local color = GetStackColor(newStack, db)
+    f.text:SetTextColor(color[1], color[2], color[3], 1)
+
+    -- Spell icon
+    if db.showIcons then
+        ApplySpellIcon(f, spellId, db)
+    else
+        f.iconFrame:Hide()
+        f.icon:Hide()
+    end
+
+    -- Position (static; animation translation will play from here when timeout fires)
+    local direction = db.scrollDirection or "up"
+    local gap = db.stackingGap or 6
+    local colOffsetX = (column == "incoming") and db.incomingOffsetX or db.outgoingOffsetX
+    local slotIdx = newStack.slotIdx
+    local stackDX, stackDY = GetStackStep(direction, db.fontSize, gap)
+    local posX = colOffsetX + (stackDX * slotIdx)
+    local posY = db.offsetY + (stackDY * slotIdx)
+    f:SetPoint("CENTER", anchor, "CENTER", posX, posY)
+
+    -- Alpha and show (no animation yet)
+    f:SetAlpha(db.textAlpha or 1)
+    f:Show()
+
+    -- When animation finishes, clean up stack entry.
+    -- Guard with identity check: a new stack for the same key may have replaced us.
+    f.onRelease = function()
+        if activeStacks[stackKey] == newStack then
+            activeStacks[stackKey] = nil
+        end
+        stackSlotCount[column] = math.max(0, stackSlotCount[column] - 1)
+    end
+end
+
+-------------------------------------------------------------------------------
 -- Display a scrolling text entry
 -------------------------------------------------------------------------------
 
-function MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGUID)
+function MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGUID, isPet)
     local db = self.db
     local f = AcquireFrame()
     local applyCrit = isCrit and db.showCrits
@@ -238,7 +519,11 @@ function MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGU
 
     -- Color from db (class colors override damage colors for outgoing)
     local color
-    if db.useClassColors and category == "damage" and column == "outgoing" then
+    -- Auto-attacks (swings) have no spellId — always show as white
+    if category == "damage" and spellId == nil then
+        color = {1, 1, 1}
+    end
+    if not color and db.useClassColors and category == "damage" and column == "outgoing" then
         if not playerClassColor then
             local _, class = UnitClass("player")
             local cc = RAID_CLASS_COLORS[class]
@@ -274,87 +559,20 @@ function MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGU
             end)
             displayAmount = ok and prefixed or displayAmount
         end
+        if isPet then
+            local ok, prefixed = pcall(function()
+                return "Pet " .. displayAmount
+            end)
+            displayAmount = ok and prefixed or displayAmount
+        end
         f.text:SetText(displayAmount)
     end
 
     ---------------------------------------------------------------------------
     -- Spell icon
-    -- C_Spell.GetSpellTexture may be restricted by Secret Values in 12.0,
-    -- so we try multiple APIs with pcall safety.
     ---------------------------------------------------------------------------
-    if db.showIcons and spellId then
-        local iconTexture
-        -- Try C_Spell.GetSpellTexture first (modern API)
-        local ok1, tex1 = pcall(C_Spell.GetSpellTexture, spellId)
-        if ok1 and tex1 then
-            iconTexture = tex1
-        else
-            -- Try C_Spell.GetSpellInfo which returns icon as .iconID
-            local ok2, info = pcall(C_Spell.GetSpellInfo, spellId)
-            if ok2 and info and info.iconID then
-                iconTexture = info.iconID
-            else
-                -- Try legacy GetSpellTexture if available
-                if GetSpellTexture then
-                    local ok3, tex3 = pcall(GetSpellTexture, spellId)
-                    if ok3 and tex3 then
-                        iconTexture = tex3
-                    end
-                end
-            end
-        end
-        if iconTexture then
-            local sz = db.iconSize
-            f.iconFrame:SetSize(sz, sz)
-            f.iconFrame:ClearAllPoints()
-
-            -- Anchor position relative to the text
-            local anchorPos = db.iconAnchor or "LEFT"
-            local ox = db.iconOffsetX or -4
-            local oy = db.iconOffsetY or 0
-            local anchorMap = {
-                LEFT        = {"RIGHT",       "LEFT",        ox, oy},
-                RIGHT       = {"LEFT",        "RIGHT",       ox, oy},
-                TOP         = {"BOTTOM",      "TOP",         ox, oy},
-                BOTTOM      = {"TOP",         "BOTTOM",      ox, oy},
-                TOPLEFT     = {"BOTTOMRIGHT", "TOPLEFT",     ox, oy},
-                TOPRIGHT    = {"BOTTOMLEFT",  "TOPRIGHT",    ox, oy},
-                BOTTOMLEFT  = {"TOPRIGHT",    "BOTTOMLEFT",  ox, oy},
-                BOTTOMRIGHT = {"TOPLEFT",     "BOTTOMRIGHT", ox, oy},
-            }
-            local pts = anchorMap[anchorPos] or anchorMap["LEFT"]
-            f.iconFrame:SetPoint(pts[1], f, pts[2], pts[3], pts[4])
-
-            f.icon:SetTexture(iconTexture)
-            f.icon:SetAlpha(db.iconAlpha or 1.0)
-            f.icon:SetDesaturated(db.iconDesaturate or false)
-
-            -- Round mask
-            if db.iconRound then
-                f.icon:AddMaskTexture(f.iconMask)
-            else
-                f.icon:RemoveMaskTexture(f.iconMask)
-            end
-
-            -- Border
-            if db.iconBorder then
-                local bs = db.iconBorderSize or 1
-                f.iconBorder:ClearAllPoints()
-                f.iconBorder:SetPoint("TOPLEFT", f.iconFrame, "TOPLEFT", -bs, bs)
-                f.iconBorder:SetPoint("BOTTOMRIGHT", f.iconFrame, "BOTTOMRIGHT", bs, -bs)
-                local bc = db.iconBorderColor or {0, 0, 0}
-                f.iconBorder:SetColorTexture(bc[1], bc[2], bc[3], 1)
-                f.iconBorder:Show()
-            else
-                f.iconBorder:Hide()
-            end
-
-            f.iconFrame:Show()
-            f.icon:Show()
-        else
-            f.iconFrame:Hide()
-            f.icon:Hide()
-        end
+    if db.showIcons then
+        ApplySpellIcon(f, spellId, db)
     else
         f.iconFrame:Hide()
         f.icon:Hide()

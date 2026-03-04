@@ -800,6 +800,17 @@ local function CreateEditorFrame()
 
     y = y - SECTION_GAP
 
+    -- STACKING ----------------------------------------------------------------
+    y = CreateSection(content, y, "Stacking Display")
+
+    local cbStacking
+    cbStacking, y = CreateCheckbox(content, y, "Stacking Mode (accumulate hits per ability)", "stackingMode")
+
+    local stackTimeoutSlider
+    stackTimeoutSlider, y = CreateSlider(content, y, "Stack Timeout (s)", "stackTimeout", 0.5, 5.0, 0.5)
+
+    y = y - SECTION_GAP
+
     -- ACTIONS ----------------------------------------------------------------
     y = CreateSection(content, y, "Actions")
 

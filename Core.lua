@@ -139,6 +139,9 @@ local DEFAULTS = {
     nameplateOffsetY = 20,
     -- Source filtering
     onlyPlayerDamage = true,
+    -- Stacking display
+    stackingMode = false,
+    stackTimeout = 1.0,
     -- Debug
     debug = false,
     -- Minimap
@@ -168,6 +171,7 @@ local PROFILE_KEYS = {
     "showIncomingDamage", "showIncomingHeals", "showOutgoingDamage", "showOutgoingHeals",
     "showMisses", "showPetDamage", "onlyPlayerDamage",
     "hideBlizzardFCT", "nameplateMode", "nameplateOffsetY",
+    "stackingMode", "stackTimeout",
 }
 
 function MBT:SaveProfile(name)
@@ -282,13 +286,8 @@ local lastPlayerSpellTime = 0
 local lastPetSpellId = nil
 local lastPetSpellTime = 0
 local SPELL_TRACK_WINDOW = 1.5  -- seconds to associate a spell icon with combat
-local DOT_TRACK_WINDOW   = 18   -- seconds to keep showing damage on a dotted target
 
 local playerInCombat = false  -- auto-attack / melee active
-
--- Per-target tracking: records targets the player has cast on so DoT damage
--- keeps showing when tabbing between them
-local engagedTargets = {}  -- [guid] = { time = <last cast time>, spellId = <last spell> }
 
 local spellTrackFrame = CreateFrame("Frame")
 pcall(function()
@@ -304,11 +303,6 @@ spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spell
         if unit == "player" then
             lastPlayerSpellId = spellId
             lastPlayerSpellTime = now
-            -- Track this target as engaged
-            local guid = UnitGUID("target")
-            if guid then
-                engagedTargets[guid] = { time = now, spellId = spellId }
-            end
         elseif unit == "pet" then
             lastPetSpellId = spellId
             lastPetSpellTime = now
@@ -317,16 +311,6 @@ spellTrackFrame:SetScript("OnEvent", function(self, event, unit, castGUID, spell
         playerInCombat = true
     elseif event == "PLAYER_LEAVE_COMBAT" then
         playerInCombat = false
-    end
-end)
-
--- Periodic cleanup of stale engaged targets (every 10s)
-C_Timer.NewTicker(10, function()
-    local now = GetTime()
-    for guid, data in pairs(engagedTargets) do
-        if (now - data.time) > DOT_TRACK_WINDOW then
-            engagedTargets[guid] = nil
-        end
     end
 end)
 
@@ -344,41 +328,40 @@ local function GetLastPetSpellId()
     return nil
 end
 
---- Check if the player has engaged this target (cast a spell on it recently).
---- Used when onlyPlayerDamage is ON to filter UNIT_COMBAT events.
-local function IsLikelyPlayerDamage(destGUID)
-    -- Check if we have cast on this specific target within DoT window
-    if destGUID then
-        local data = engagedTargets[destGUID]
-        if data and (GetTime() - data.time) <= DOT_TRACK_WINDOW then
-            return true
-        end
-    end
-    return false
-end
-
 -------------------------------------------------------------------------------
--- Dedup: CLEU and UNIT_COMBAT both fire for outgoing damage/heals.
--- We prefer CLEU (has spellId for icons). Track recent CLEU events so
--- UNIT_COMBAT can skip duplicates.
+-- CLEU player-damage gate.
+-- CLEU fires first (registered before UNIT_COMBAT on the same frame) and
+-- marks events where sourceGUID == playerGUID/petGUID.  UNIT_COMBAT "target"
+-- then consumes those marks to display only the player's own hits, ignoring
+-- damage from other players/NPCs on the same target.
+-- spellId and isCrit are stored in the mark so UNIT_COMBAT can use them.
 -------------------------------------------------------------------------------
 
-local recentCLEU = {}        -- { [amount..category..time] = true }
-local DEDUP_WINDOW = 0.15    -- 150ms window for same-frame events
+local recentCLEU = {}     -- [amount..category] = { time, spellId, isCrit }
+local DEDUP_WINDOW = 0.15 -- 150 ms window covers same-server-tick delivery
+local cleuLastMark = 0    -- timestamp of last successful CLEU mark
+local CLEU_ACTIVE_WINDOW = 5 -- seconds; if no mark in this window, treat CLEU as inactive
 
-local function MarkCLEUEvent(amount, category)
-    local key = tostring(amount) .. category
-    recentCLEU[key] = GetTime()
+local function MarkCLEUEvent(amount, category, spellId, isCrit)
+    local now = GetTime()
+    cleuLastMark = now  -- always mark CLEU as active, even if key generation fails
+    -- tostring() can throw on secret numeric values (e.g. raw melee damage amounts).
+    -- Wrap in pcall so a failure here doesn't abort the MBT:ShowText call that follows.
+    local keyOk, key = pcall(function() return tostring(amount) .. category end)
+    if not keyOk then return end
+    recentCLEU[key] = { time = now, spellId = spellId, isCrit = isCrit }
 end
 
-local function IsDuplicateOfCLEU(amount, category)
-    local key = tostring(amount) .. category
-    local t = recentCLEU[key]
-    if t and (GetTime() - t) <= DEDUP_WINDOW then
+-- Returns marked (bool), spellId, isCrit.  Consumes the mark on success.
+local function ConsumeCLEUMark(amount, category)
+    local keyOk, key = pcall(function() return tostring(amount) .. category end)
+    if not keyOk then return false, nil, false end
+    local mark = recentCLEU[key]
+    if mark and (GetTime() - mark.time) <= DEDUP_WINDOW then
         recentCLEU[key] = nil
-        return true
+        return true, mark.spellId, mark.isCrit
     end
-    return false
+    return false, nil, false
 end
 
 
@@ -421,26 +404,40 @@ local function OnUnitCombat(unit, action, flagText, amount, schoolMask)
         return
     end
 
-    -- Outgoing: damage/heals/misses on our target
-    -- When onlyPlayerDamage is true, only show if:
-    --   1. CLEU already handled it (dedup will skip here), OR
-    --   2. Player recently cast a spell / is auto-attacking (likely ours)
-    -- This filters out other players' and NPCs' damage on the same target.
+    -- Outgoing: damage/heals/misses on our target.
+    -- CLEU fires first and marks events where sourceGUID == playerGUID.
+    -- We display only marks — this filters out other players' and NPC damage
+    -- that UNIT_COMBAT would otherwise show (it fires for ALL sources on target).
     if unit == "target" then
         local destGUID = UnitGUID("target")
 
-        -- If onlyPlayerDamage, check if we've cast on this specific target
-        if db.onlyPlayerDamage and not IsLikelyPlayerDamage(destGUID) then
-            return
-        end
-
         if action == "WOUND" then
-            if db.showOutgoingDamage and not IsDuplicateOfCLEU(amount, "damage") then
-                MBT:ShowText(amount, "damage", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+            if db.showOutgoingDamage then
+                local marked, cleuSpellId, cleuCrit = ConsumeCLEUMark(amount, "damage")
+                if marked then
+                    -- CLEU already displayed this; just consume the mark to dedup.
+                elseif (GetTime() - cleuLastMark) > CLEU_ACTIVE_WINDOW then
+                    -- CLEU unavailable (e.g. Plunderstorm restricted mode).
+                    -- Only show if the player recently cast a spell/ability, so we
+                    -- don't display every other player's hit on the same target.
+                    local spellId = GetLastPlayerSpellId()
+                    if spellId then
+                        MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, destGUID)
+                    end
+                end
+                -- else: CLEU is active but didn't mark this hit → other player's damage → drop
             end
         elseif action == "HEAL" then
-            if db.showOutgoingHeals and not IsDuplicateOfCLEU(amount, "heal") then
-                MBT:ShowText(amount, "heal", "outgoing", GetLastPlayerSpellId(), isCrit, destGUID)
+            if db.showOutgoingHeals then
+                local marked = ConsumeCLEUMark(amount, "heal")
+                if marked then
+                    -- dedup only
+                elseif (GetTime() - cleuLastMark) > CLEU_ACTIVE_WINDOW then
+                    local spellId = GetLastPlayerSpellId()
+                    if spellId then
+                        MBT:ShowText(amount, "heal", "outgoing", spellId, isCrit, destGUID)
+                    end
+                end
             end
         elseif UC_MISS[action] then
             if db.showMisses then
@@ -450,10 +447,10 @@ local function OnUnitCombat(unit, action, flagText, amount, schoolMask)
         return
     end
 
-    -- Pet damage
+    -- Pet damage: CLEU handles display; consume mark here to dedup.
     if unit == "pet" then
-        if action == "WOUND" and db.showPetDamage and not IsDuplicateOfCLEU(amount, "damage") then
-            MBT:ShowText(amount, "damage", "outgoing", GetLastPetSpellId(), isCrit)
+        if action == "WOUND" and db.showPetDamage then
+            ConsumeCLEUMark(amount, "damage")
         end
         return
     end
@@ -537,11 +534,26 @@ local function TryParseCLEU()
               sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
               destGUID, destName, destFlags, destRaidFlags = CombatLogGetCurrentEventInfo()
 
-        local isPlayerSource = (sourceGUID == playerGUID)
-        local isPetSource    = (sourceGUID == petGUID)
-        if not isPlayerSource and not isPetSource then return end
+        -- Use combat log flags instead of GUID comparison.
+        -- GUIDs from CombatLogGetCurrentEventInfo() are "secret string values" in
+        -- current WoW retail and cannot be compared with == without throwing an error.
+        -- sourceFlags / destFlags are plain numbers and are always safe to inspect.
+        --   COMBATLOG_OBJECT_AFFILIATION_MINE = 0x1  (unit belongs to the player)
+        --   COMBATLOG_OBJECT_TYPE_PLAYER       = 0x400
+        local MINE       = COMBATLOG_OBJECT_AFFILIATION_MINE or 0x1
+        local TYPE_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x400
+        local isMySource     = bit.band(sourceFlags, MINE) ~= 0
+        local isPlayerSource = isMySource and (bit.band(sourceFlags, TYPE_PLAYER) ~= 0)
+        local isPetSource    = isMySource and not isPlayerSource
+        if not isMySource then return end
 
-        local isPlayerDest = (destGUID == playerGUID)
+        local isPlayerDest = bit.band(destFlags, MINE) ~= 0 and bit.band(destFlags, TYPE_PLAYER) ~= 0
+
+        -- Use a non-secret target GUID for stacking keys and nameplate lookup.
+        -- destGUID from CLEU is a secret value; UnitGUID("target") is not.
+        local safeDestGUID
+        local gOk, gv = pcall(UnitGUID, "target")
+        if gOk then safeDestGUID = gv end
 
         if CLEU_DAMAGE[subEvent] then
             local amount, spellId, critical
@@ -561,11 +573,14 @@ local function TryParseCLEU()
             end
 
             if isPlayerSource and db.showOutgoingDamage then
-                MarkCLEUEvent(amount, "damage")
-                MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, destGUID)
+                -- Mark the event so UNIT_COMBAT "target" can dedup it (prevents double-
+                -- display when UNIT_COMBAT fires after CLEU).  CLEU also displays here
+                -- directly so that display still works when UNIT_COMBAT fires first.
+                MarkCLEUEvent(amount, "damage", spellId, isCrit)
+                MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, safeDestGUID, false)
             elseif isPetSource and db.showPetDamage then
-                MarkCLEUEvent(amount, "damage")
-                MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, destGUID)
+                MarkCLEUEvent(amount, "damage", spellId, isCrit)
+                MBT:ShowText(amount, "damage", "outgoing", spellId, isCrit, safeDestGUID, true)
             end
             return
         end
@@ -580,8 +595,8 @@ local function TryParseCLEU()
                     local cOk, cVal = pcall(function() return critical == true end)
                     isCrit = cOk and cVal or false
                 end
-                MarkCLEUEvent(amount, "heal")
-                MBT:ShowText(amount, "heal", "outgoing", spellId, isCrit, destGUID)
+                MarkCLEUEvent(amount, "heal", spellId, isCrit)
+                MBT:ShowText(amount, "heal", "outgoing", spellId, isCrit, safeDestGUID, false)
             end
             return
         end
@@ -594,7 +609,7 @@ local function TryParseCLEU()
                 else
                     missType = select(15, CombatLogGetCurrentEventInfo())
                 end
-                MBT:ShowText(missType, "miss", "outgoing", nil, false, destGUID)
+                MBT:ShowText(missType, "miss", "outgoing", nil, false, safeDestGUID, false)
             end
             return
         end
@@ -609,7 +624,7 @@ end
 -- ShowText - bridge to Display module
 -------------------------------------------------------------------------------
 
-function MBT:ShowText(amount, category, column, spellId, isCrit, destGUID)
+function MBT:ShowText(amount, category, column, spellId, isCrit, destGUID, isPet)
     local db = self.db
 
     -- Only show crits filter
@@ -634,7 +649,11 @@ function MBT:ShowText(amount, category, column, spellId, isCrit, destGUID)
         DebugPrint("ShowText outgoing:", category, "spellId=" .. idStr)
     end
 
-    MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGUID)
+    if db.stackingMode then
+        MBT:AccumulateAndDisplay(amount, category, column, spellId, isCrit, destGUID, isPet)
+    else
+        MBT:DisplayScrollText(amount, category, column, spellId, isCrit, destGUID, isPet)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -673,7 +692,8 @@ function MBT:GetNameplateByGUID(guid)
     }
     for _, unit in ipairs(fallbackUnits) do
         local unitOk, unitGUID = pcall(UnitGUID, unit)
-        if unitOk and unitGUID == guid then
+        local cmpOk, matched = pcall(function() return unitOk and unitGUID == guid end)
+        if cmpOk and matched then
             local plateOk, plate = pcall(C_NamePlate.GetNamePlateForUnit, unit)
             if plateOk and plate then
                 return plate
@@ -765,9 +785,24 @@ local function OnEvent(self, event, ...)
     elseif event == "ADDON_RESTRICTION_STATE_CHANGED" then
         MBT.restricted = IsRestricted()
 
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Combat ended — safe to register CLEU now.  This fires after PLAYER_LOGIN
+        -- skipped registration due to combat lockdown (e.g. reload while attacking).
+        eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+
     elseif event == "PLAYER_LOGIN" then
         playerGUID = UnitGUID("player")
         petGUID = UnitGUID("pet")
+        -- Register CLEU here (not in main chunk) to avoid ADDON_ACTION_FORBIDDEN
+        -- on reload-in-combat.  Reset cleuLastMark so UNIT_COMBAT falls back to
+        -- direct display immediately if CLEU turns out to be unavailable.
+        cleuLastMark = 0
+        -- Skip CLEU registration when in combat lockdown (e.g. reload while attacking).
+        -- RegisterEvent is a protected function blocked during combat; calling it fires
+        -- the global error handler even inside pcall.  PLAYER_REGEN_ENABLED will retry.
+        if not InCombatLockdown() then
+            eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+        end
 
         if not MidnightBattleTextDB then
             MidnightBattleTextDB = {}
@@ -828,9 +863,12 @@ function MBT:UpdateBlizzardFCT()
     DebugPrint("Blizzard FCT CVars set to", val)
 end
 
--- Register events safely — UNIT_COMBAT may be protected in some builds
+-- Register events safely — some events are restricted in combat/restricted contexts
 eventFrame:RegisterEvent("PLAYER_LOGIN")
-eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+-- COMBAT_LOG_EVENT_UNFILTERED is registered in PLAYER_LOGIN and retried on
+-- PLAYER_REGEN_ENABLED to avoid ADDON_ACTION_FORBIDDEN when reloading in combat
+-- (e.g. attacking a training dummy).  RegisterEvent is restricted in combat lockdown.
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("UNIT_PET")
 eventFrame:RegisterEvent("ADDON_RESTRICTION_STATE_CHANGED")
 
@@ -874,3 +912,4 @@ end
 MBT.IsRestricted = IsRestricted
 MBT.CanAccess = CanAccess
 MBT.IsSecret = IsSecret
+MBT.GetLastPlayerSpellId = GetLastPlayerSpellId
