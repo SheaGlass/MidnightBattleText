@@ -395,10 +395,11 @@ end
 function MBT:AccumulateAndDisplay(amount, category, column, spellId, isCrit, destGUID, isPet)
     local db = self.db
 
-    -- Build a safe (non-secret) stack key
-    local spellKey  = spellId and tostring(spellId) or (isPet and "petswing" or "swing")
-    local targetKey = destGUID or "none"
-    local stackKey  = spellKey .. "|" .. targetKey .. "|" .. column
+    -- Build a safe (non-secret) stack key.
+    -- destGUID from UnitGUID() can be a secret value even inside pcall success,
+    -- so we exclude it from the key to avoid "table index is secret" errors.
+    local spellKey = spellId and tostring(spellId) or (isPet and "petswing" or "swing")
+    local stackKey = spellKey .. "|" .. column
 
     local stack = activeStacks[stackKey]
 
